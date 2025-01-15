@@ -1,4 +1,5 @@
 use log::{debug, info, trace};
+use serial_rs::{posix::TTYPort, FlowControl, SerialPort, SerialPortSettings};
 use std::{
     collections::VecDeque,
     io::{Read, Write},
@@ -17,15 +18,9 @@ use super::{Error, Obd2BaseDevice, Obd2Reader, Result};
 /// [Datasheet for v1.4b](https://github.com/rsammelson/obd2/blob/master/docs/ELM327DSH.pdf), and
 /// the [source](https://www.elmelectronics.com/products/dsheets/).
 pub struct Elm327 {
-    device: ftdi::Device,
+    device: TTYPort,
     buffer: VecDeque<u8>,
     baud_rate: u32,
-}
-
-impl Default for Elm327 {
-    fn default() -> Self {
-        Elm327::new().unwrap()
-    }
 }
 
 impl Obd2BaseDevice for Elm327 {
@@ -64,20 +59,27 @@ impl Obd2Reader for Elm327 {
     }
 }
 
+fn new_ttyport(path: impl Into<String>, baud: u32) -> Result<TTYPort> {
+    TTYPort::new(
+        path.into(),
+        Some(
+            SerialPortSettings::default()
+                .baud(baud)
+                .read_timeout(Some(100))
+                .write_timeout(Some(100))
+                .set_flow_control(FlowControl::None),
+        ),
+    )
+    .map_err(Into::into)
+}
+
 impl Elm327 {
-    fn new() -> Result<Self> {
-        let mut ftdi_device = ftdi::find_by_vid_pid(0x0403, 0x6001)
-            .interface(ftdi::Interface::A)
-            .open()?;
-
-        ftdi_device.set_baud_rate(38400)?;
-        ftdi_device.configure(ftdi::Bits::Eight, ftdi::StopBits::One, ftdi::Parity::None)?;
-        // device.set_latency_timer(2).unwrap();
-
-        ftdi_device.usb_reset()?;
+    /// Create a [`Elm327`] object
+    pub fn new(dev_path: impl Into<String>) -> Result<Self> {
+        let serial_interface = new_ttyport(dev_path, 38400)?;
 
         let mut device = Elm327 {
-            device: ftdi_device,
+            device: serial_interface,
             buffer: VecDeque::new(),
             baud_rate: 38400,
         };
@@ -98,7 +100,7 @@ impl Elm327 {
     }
 
     fn flush_buffers(&mut self) -> Result<()> {
-        self.device.usb_purge_buffers()?;
+        self.device.flush()?;
         Ok(())
     }
 
@@ -146,6 +148,11 @@ impl Elm327 {
         Ok(())
     }
 
+    fn set_baud(&mut self, new_baud: u32) -> Result<()> {
+        self.device = new_ttyport(self.device.get_path(), new_baud)?;
+        Ok(())
+    }
+
     fn find_baud_rate_divisor(&mut self) -> Result<Option<(u8, u32)>> {
         for div in 90..104u8 {
             let new_baud = 4000000 / u32::from(div);
@@ -154,7 +161,7 @@ impl Elm327 {
             self.send_serial_str(&format!("ATBRD{:02X}", div))?;
 
             if self.get_line()? == Some(b"OK".to_vec()) {
-                self.device.set_baud_rate(new_baud)?;
+                self.set_baud(new_baud)?;
 
                 // validate new baud rate
                 let validation_response = self.get_line()?;
@@ -169,13 +176,13 @@ impl Elm327 {
                         return Ok(Some((div, new_baud)));
                     } else {
                         // our TX is bad
-                        self.device.set_baud_rate(self.baud_rate)?;
+                        self.set_baud(self.baud_rate)?;
                         debug!("Baud rate bad - device did not receive response");
                         self.get_response()?;
                     }
                 } else {
                     // reset baud rate and keep looking
-                    self.device.set_baud_rate(self.baud_rate)?;
+                    self.set_baud(self.baud_rate)?;
                     debug!(
                         "Baud rate bad - did get correct string (got {:?} - {:?})",
                         validation_response,

@@ -50,9 +50,9 @@ pub trait Obd2Reader {
 /// Error type for low-level ODB-II communication issues
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    /// An error with the underlying [FTDI device](ftdi::Device)
-    #[error("FTDI error: `{0:?}`")]
-    Ftdi(ftdi::Error),
+    /// An error with Serial
+    #[error("Serial error: `{0:?}`")]
+    Serial(serial_rs::SerialError),
 
     /// An I/O error in a low-level [std::io] stream operation
     #[error("IO error: `{0:?}`")]
@@ -63,9 +63,9 @@ pub enum Error {
     Communication(String),
 }
 
-impl From<ftdi::Error> for Error {
-    fn from(e: ftdi::Error) -> Self {
-        Error::Ftdi(e)
+impl From<serial_rs::SerialError> for Error {
+    fn from(e: serial_rs::SerialError) -> Self {
+        Error::Serial(e)
     }
 }
 
